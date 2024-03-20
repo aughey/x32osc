@@ -159,7 +159,7 @@ async fn main() -> Result<()> {
                 let buf = recv_until_empty().await?;
                 let packet = rosc::decoder::decode_udp(&buf)?;
                 let floats = get_floats_from_packet(&packet.1)?;
-                let value = floats.get(0).ok_or_else(|| anyhow::anyhow!("No floats"))?;
+                let value = floats.first().ok_or_else(|| anyhow::anyhow!("No floats"))?;
                 Ok::<_, anyhow::Error>(*value)
             }
         }
@@ -173,7 +173,7 @@ async fn main() -> Result<()> {
                 OscPacket::Message(m) => m,
                 _ => anyhow::bail!("Expected message, got {gain:?}"),
             };
-            let gain = match gain.args.get(0) {
+            let gain = match gain.args.first() {
                 Some(rosc::OscType::Float(f)) => f,
                 _ => anyhow::bail!("Expected float in first arg of gain message"),
             };
@@ -239,7 +239,7 @@ fn get_floats_from_packet(packet: &OscPacket) -> Result<Vec<f32>> {
         _ => anyhow::bail!("Expected message, got {packet:?}"),
     };
 
-    let meter_values = match meter_message.args.get(0) {
+    let meter_values = match meter_message.args.first() {
         Some(rosc::OscType::Blob(blob)) => blob,
         _ => anyhow::bail!("Expected blob in first arg of meter message"),
     };
