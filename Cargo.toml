@@ -1,0 +1,12 @@
+[package]
+name = "x32osc"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+anyhow = "1.0.81"
+nom = "7.1.3"
+rosc = "0.10.1"
+tokio = { version = "1.36.0", features = ["full"] }
