@@ -1,9 +1,6 @@
-use core::num;
 use std::{future::Future, net::SocketAddr, sync::Arc};
-
 use anyhow::Result;
 use rosc::{OscMessage, OscPacket};
-use tokio::net::UdpSocket;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -36,31 +33,41 @@ async fn main() -> Result<()> {
 
     let send_data = {
         let socket = socket.clone();
-        |bytes: Vec<u8>| async move {
-            socket.send_to(&bytes, remote_addr).await?;
-            Ok::<_, anyhow::Error>(())
+        move |bytes: Vec<u8>| {
+            let socket = socket.clone();
+            async move {
+                socket.send_to(&bytes, remote_addr).await?;
+                Ok::<_, anyhow::Error>(())
+            }
         }
     };
 
     let recv_data = {
         let socket = socket.clone();
-        || async move {
-            let mut buf = vec![0u8; 65536];
-            let (len, _) = socket.recv_from(&mut buf).await?;
-            // expand here
-            let mut v = buf[..len].to_vec();
-            v.extend_from_slice(&[0u8; 8]);
+        move || {
+            let socket = socket.clone();
+            async move {
+                let mut buf = vec![0u8; 65536];
+                let (len, _) = socket.recv_from(&mut buf).await?;
+                // expand here
+                let mut v = buf[..len].to_vec();
+                v.extend_from_slice(&[0u8; 8]);
 
-            Ok::<_, anyhow::Error>(v)
+                Ok::<_, anyhow::Error>(v)
+            }
         }
     };
 
     let send_recv = {
         let send_data = send_data.clone();
         let recv_data = recv_data.clone();
-        |bytes: Vec<u8>| async move {
-            send_data(bytes).await?;
-            recv_data().await
+        move |bytes: Vec<u8>| {
+            let send_data = send_data.clone();
+            let recv_data = recv_data.clone();
+            async move {
+                send_data(bytes).await?;
+                recv_data().await
+            }
         }
     };
 
@@ -75,10 +82,10 @@ async fn main() -> Result<()> {
 
     println!(
         "Trim value: {:?}",
-        send_recv_command("/headamp/000/gain", send_recv.clone()).await?
+        send_recv_command("/headamp/000/gain", &send_recv).await?
     );
 
-    send_recv_command("/info", send_recv.clone()).await?;
+    send_recv_command("/info", &send_recv).await?;
 
     let res = send_recv_osc(
         OscMessage {
@@ -88,7 +95,7 @@ async fn main() -> Result<()> {
                 rosc::OscType::Int(0),
             ],
         },
-        send_recv.clone(),
+        &send_recv,
     )
     .await?;
     println!("Received packet: {:?}", res);
@@ -98,63 +105,70 @@ async fn main() -> Result<()> {
 
     let recv_until_empty = {
         let socket = socket.clone();
-        || async move {
-            let mut buf = vec![0u8; 65536];
-            let (len, _) = socket.recv_from(&mut buf).await?;
-            let buf = buf[..len].to_vec();
-
-            // keep receiving until we cannot receive without blocking.
-            let mut second_buf = None;
-            loop {
+        move || {
+            let socket = socket.clone();
+            async move {
                 let mut buf = vec![0u8; 65536];
-                match socket.try_recv(buf.as_mut()) {
-                    Ok(len) => {
-                        let v = buf[..len].to_vec();
-                        second_buf = Some(v);
+                let (len, _) = socket.recv_from(&mut buf).await?;
+                let buf = buf[..len].to_vec();
+
+                // keep receiving until we cannot receive without blocking.
+                let mut second_buf = None;
+                loop {
+                    let mut buf = vec![0u8; 65536];
+                    match socket.try_recv(buf.as_mut()) {
+                        Ok(len) => {
+                            let v = buf[..len].to_vec();
+                            second_buf = Some(v);
+                        }
+                        Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+                        Err(e) => return Err(e),
                     }
-                    Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
-                    Err(e) => return Err(e),
                 }
+                let mut buf = if let Some(second_buf) = second_buf {
+                    second_buf
+                } else {
+                    buf
+                };
+                // pad
+                buf.extend_from_slice(&[0u8; 8]);
+                Ok(buf)
             }
-            let mut buf = if let Some(second_buf) = second_buf {
-                second_buf
-            } else {
-                buf
-            };
-            // pad
-            buf.extend_from_slice(&[0u8; 8]);
-            Ok(buf)
         }
     };
 
     let get_measurement = {
         let send_data = send_data.clone();
-        || async move {
-            // send the /meters/1 message
-            send_osc(
-                OscMessage {
-                    addr: "/meters".to_string(),
-                    args: vec![
-                        rosc::OscType::String("/meters/1".to_string()),
-                        rosc::OscType::Int(0),
-                    ],
-                },
-                send_data.clone(),
-            )
-            .await?;
+        move || {
+            let send_data = send_data.clone();
+            let recv_until_empty = recv_until_empty.clone();
+            async move {
+                // send the /meters/1 message
+                send_osc(
+                    OscMessage {
+                        addr: "/meters".to_string(),
+                        args: vec![
+                            rosc::OscType::String("/meters/1".to_string()),
+                            rosc::OscType::Int(0),
+                        ],
+                    },
+                    &send_data,
+                )
+                .await?;
 
-            let buf = recv_until_empty().await?;
-            let packet = rosc::decoder::decode_udp(&buf)?;
-            let floats = get_floats_from_packet(&packet.1)?;
-            let value = floats.get(0).ok_or_else(|| anyhow::anyhow!("No floats"))?;
-            Ok::<_, anyhow::Error>(*value)
+                let buf = recv_until_empty().await?;
+                let packet = rosc::decoder::decode_udp(&buf)?;
+                let floats = get_floats_from_packet(&packet.1)?;
+                let value = floats.get(0).ok_or_else(|| anyhow::anyhow!("No floats"))?;
+                Ok::<_, anyhow::Error>(*value)
+            }
         }
     };
 
     let get_value = {
         let send_recv = send_recv.clone();
         || async move {
-            let gain = send_recv_command("/headamp/000/gain", send_recv).await?;
+            let gain = send_recv_command("/headamp/000/gain", &send_recv).await?;
             let gain = match gain {
                 OscPacket::Message(m) => m,
                 _ => anyhow::bail!("Expected message, got {gain:?}"),
@@ -167,31 +181,29 @@ async fn main() -> Result<()> {
         }
     };
 
-    let set_value = |value: f32| async move {
+    let _set_value = |value: f32| async move {
         send_osc(
             OscMessage {
                 addr: "/headamp/000/gain".to_string(),
                 args: vec![rosc::OscType::Float(value)],
             },
-            send_data.clone(),
+            &send_data,
         )
         .await
     };
 
-    let current_gain = get_value().await?;
-    println!("Current gain: {:?}", current_gain);
 
     // Converge on our own here
-    // const TARGET: f32 = 0.5;
-    // let mut pid = pid::Pid::new(TARGET, 0.1);
-    // pid.p(1.0, 1.0);
-    // loop {
-    //     let cur_value = get_measurement().await?;
-    //     let output = pid.next_control_output(cur_value);
-    //     println!("Cur value: {:?}, output: {:?}", cur_value, output);
-    // }
-
-    return Ok(());
+    const TARGET: f32 = 0.5;
+    let mut pid = pid::Pid::new(TARGET, 0.1);
+    pid.p(1.0, 1.0);
+    let current_gain = get_value().await?;
+    println!("Current gain: {:?}", current_gain);
+    loop {
+        let cur_value = get_measurement().await?;
+        let output = pid.next_control_output(cur_value);
+        println!("Cur value: {:?}, output: {:?}", cur_value, output);
+    }
 
     // let inputs = floats
     //     .get(0..32)
@@ -207,15 +219,15 @@ async fn main() -> Result<()> {
     // println!("Gate gain: {:?}", gate_gain);
     // println!("Dynamics: {:?}", dynamics);
 
-    loop {
-        let mut buf = vec![0u8; 65536];
-        let (len, _addr) = socket.recv_from(&mut buf).await?;
-        let mut buf = buf[..len].to_vec();
-        buf.extend_from_slice([0u8; 8].as_ref());
-        let (_, packet) = rosc::decoder::decode_udp(&buf)?;
-        let floats = get_floats_from_packet(&packet)?;
-        println!("Received packet: {:?}", floats);
-    }
+    // loop {
+    //     let mut buf = vec![0u8; 65536];
+    //     let (len, _addr) = socket.recv_from(&mut buf).await?;
+    //     let mut buf = buf[..len].to_vec();
+    //     buf.extend_from_slice([0u8; 8].as_ref());
+    //     let (_, packet) = rosc::decoder::decode_udp(&buf)?;
+    //     let floats = get_floats_from_packet(&packet)?;
+    //     println!("Received packet: {:?}", floats);
+    // }
 
     #[allow(unreachable_code)]
     Ok(())
@@ -253,7 +265,7 @@ fn get_floats_from_packet(packet: &OscPacket) -> Result<Vec<f32>> {
     Ok(floats)
 }
 
-async fn send_osc<Fut>(msg: OscMessage, send: impl FnOnce(Vec<u8>) -> Fut) -> Result<()>
+async fn send_osc<Fut>(msg: OscMessage, send: &impl Fn(Vec<u8>) -> Fut) -> Result<()>
 where
     Fut: Future<Output = Result<()>>,
 {
@@ -264,7 +276,7 @@ where
 
 async fn send_recv_osc<FutBuf>(
     msg: OscMessage,
-    send_recv: impl FnOnce(Vec<u8>) -> FutBuf,
+    send_recv: &impl Fn(Vec<u8>) -> FutBuf,
 ) -> Result<OscPacket>
 where
     FutBuf: Future<Output = Result<Vec<u8>>>,
@@ -286,7 +298,7 @@ where
 
 async fn send_recv_command<FutBuf>(
     command: &str,
-    send_recv: impl FnOnce(Vec<u8>) -> FutBuf,
+    send_recv: &impl Fn(Vec<u8>) -> FutBuf,
 ) -> Result<OscPacket>
 where
     FutBuf: Future<Output = Result<Vec<u8>>>,
