@@ -137,7 +137,7 @@ async fn main() -> Result<()> {
         }
     };
 
-    let get_measurement = {
+    let get_measurements = {
         let send_data = send_data.clone();
         move || {
             let send_data = send_data.clone();
@@ -156,19 +156,30 @@ async fn main() -> Result<()> {
                 )
                 .await?;
 
+                // Read 3 times and average
+                let mut sum = vec![0.0; 32];
+                const N: usize = 3;
+                for _ in 0..N {
                 let buf = recv_until_empty().await?;
                 let packet = rosc::decoder::decode_udp(&buf)?;
                 let floats = get_floats_from_packet(&packet.1)?;
-                let value = floats.first().ok_or_else(|| anyhow::anyhow!("No floats"))?;
-                Ok::<_, anyhow::Error>(*value)
+                for (sum, value) in sum.iter_mut().zip(floats.iter()) {
+                    *sum += *value;
+                }
+                
+                }
+                sum.iter_mut().for_each(|f| *f /= N as f32);
+                Ok::<_, anyhow::Error>(sum)
             }
         }
     };
 
-    let get_value = {
+    let get_gain = {
         let send_recv = send_recv.clone();
-        || async move {
-            let gain = send_recv_command("/headamp/000/gain", &send_recv).await?;
+        move |index: usize| {
+            let send_recv = send_recv.clone();
+            async move {
+            let gain = send_recv_command(&format!("/headamp/{index:0>3}/gain"), &send_recv).await?;
             let gain = match gain {
                 OscPacket::Message(m) => m,
                 _ => anyhow::bail!("Expected message, got {gain:?}"),
@@ -179,30 +190,57 @@ async fn main() -> Result<()> {
             };
             Ok::<_, anyhow::Error>(*gain)
         }
+    }
     };
 
-    let _set_value = |value: f32| async move {
+    let set_gain = |index: usize, value: f32| {
+        let send_data = send_data.clone();
+        println!("Setting gain: {:?}, {:?}", index, value);
+        async move {
         send_osc(
             OscMessage {
-                addr: "/headamp/000/gain".to_string(),
+                addr: format!("/headamp/{index:0>3}/gain"),
                 args: vec![rosc::OscType::Float(value)],
             },
             &send_data,
         )
         .await
+    }
     };
 
 
     // Converge on our own here
-    const TARGET: f32 = 0.5;
-    let mut pid = pid::Pid::new(TARGET, 0.1);
-    pid.p(1.0, 1.0);
-    let current_gain = get_value().await?;
-    println!("Current gain: {:?}", current_gain);
+    const TARGET: f32 = 0.005;
+    const INDICES: &[usize] = &[0,16,18,24,25,26,27,28,29];
+
+    struct Control {
+        pid: pid::Pid<f32>,
+        index: usize,
+        gain_index: usize,
+        current_gain: f32,
+    }
+    let mut controls = Vec::new();
+    for i in INDICES {
+        let gain_index = if *i < 15 { *i } else { *i + 16 };
+        controls.push(Control {
+        pid: pid::Pid::new(TARGET, 0.1).p(3.0,1.0).clone(),
+        index: *i,
+        gain_index: gain_index,
+        current_gain: get_gain(gain_index).await?,
+    });
+}
+
     loop {
-        let cur_value = get_measurement().await?;
-        let output = pid.next_control_output(cur_value);
+        let cur_values = get_measurements().await?;
+
+        for c in controls.iter_mut() {
+        let cur_value = *cur_values.get(c.index).ok_or_else(|| anyhow::anyhow!("No cur value"))?;
+        let output = c.pid.next_control_output(cur_value);
+        c.current_gain += output.output;
+        set_gain(c.gain_index,c.current_gain).await?;
+
         println!("Cur value: {:?}, output: {:?}", cur_value, output);
+        }
     }
 
     // let inputs = floats
@@ -251,7 +289,6 @@ fn get_floats_from_packet(packet: &OscPacket) -> Result<Vec<f32>> {
             .map_err(|e| anyhow::anyhow!("Failed to get num floats: {e:?}"))?;
 
     let num_floats: usize = num_floats.try_into()?;
-    println!("num_floats: {num_floats}");
 
     // Parse the floating values
     let (_rest, floats) = nom::multi::count(
@@ -259,8 +296,6 @@ fn get_floats_from_packet(packet: &OscPacket) -> Result<Vec<f32>> {
         num_floats,
     )(rest)
     .map_err(|e| anyhow::anyhow!("Failed to parse floats: {e:?}"))?;
-
-    println!("Floats: {}, {:?}", floats.len(), floats);
 
     Ok(floats)
 }
