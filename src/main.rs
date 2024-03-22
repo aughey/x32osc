@@ -1,6 +1,6 @@
-use std::{future::Future, net::SocketAddr, sync::Arc};
 use anyhow::Result;
 use rosc::{OscMessage, OscPacket};
+use std::{future::Future, net::SocketAddr, sync::Arc};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -160,13 +160,12 @@ async fn main() -> Result<()> {
                 let mut sum = vec![0.0; 32];
                 const N: usize = 3;
                 for _ in 0..N {
-                let buf = recv_until_empty().await?;
-                let packet = rosc::decoder::decode_udp(&buf)?;
-                let floats = get_floats_from_packet(&packet.1)?;
-                for (sum, value) in sum.iter_mut().zip(floats.iter()) {
-                    *sum += *value;
-                }
-                
+                    let buf = recv_until_empty().await?;
+                    let packet = rosc::decoder::decode_udp(&buf)?;
+                    let floats = get_floats_from_packet(&packet.1)?;
+                    for (sum, value) in sum.iter_mut().zip(floats.iter()) {
+                        *sum += *value;
+                    }
                 }
                 sum.iter_mut().for_each(|f| *f /= N as f32);
                 Ok::<_, anyhow::Error>(sum)
@@ -179,39 +178,39 @@ async fn main() -> Result<()> {
         move |index: usize| {
             let send_recv = send_recv.clone();
             async move {
-            let gain = send_recv_command(&format!("/headamp/{index:0>3}/gain"), &send_recv).await?;
-            let gain = match gain {
-                OscPacket::Message(m) => m,
-                _ => anyhow::bail!("Expected message, got {gain:?}"),
-            };
-            let gain = match gain.args.first() {
-                Some(rosc::OscType::Float(f)) => f,
-                _ => anyhow::bail!("Expected float in first arg of gain message"),
-            };
-            Ok::<_, anyhow::Error>(*gain)
+                let gain =
+                    send_recv_command(&format!("/headamp/{index:0>3}/gain"), &send_recv).await?;
+                let gain = match gain {
+                    OscPacket::Message(m) => m,
+                    _ => anyhow::bail!("Expected message, got {gain:?}"),
+                };
+                let gain = match gain.args.first() {
+                    Some(rosc::OscType::Float(f)) => f,
+                    _ => anyhow::bail!("Expected float in first arg of gain message"),
+                };
+                Ok::<_, anyhow::Error>(*gain)
+            }
         }
-    }
     };
 
     let set_gain = |index: usize, value: f32| {
         let send_data = send_data.clone();
         println!("Setting gain: {:?}, {:?}", index, value);
         async move {
-        send_osc(
-            OscMessage {
-                addr: format!("/headamp/{index:0>3}/gain"),
-                args: vec![rosc::OscType::Float(value)],
-            },
-            &send_data,
-        )
-        .await
-    }
+            send_osc(
+                OscMessage {
+                    addr: format!("/headamp/{index:0>3}/gain"),
+                    args: vec![rosc::OscType::Float(value)],
+                },
+                &send_data,
+            )
+            .await
+        }
     };
-
 
     // Converge on our own here
     const TARGET: f32 = 0.005;
-    const INDICES: &[usize] = &[0,16,18,24,25,26,27,28,29];
+    const INDICES: &[usize] = &[0, 16, 18, 24, 25, 26, 27, 28, 29];
 
     struct Control {
         pid: pid::Pid<f32>,
@@ -223,23 +222,25 @@ async fn main() -> Result<()> {
     for i in INDICES {
         let gain_index = if *i < 15 { *i } else { *i + 16 };
         controls.push(Control {
-        pid: pid::Pid::new(TARGET, 0.1).p(3.0,1.0).clone(),
-        index: *i,
-        gain_index: gain_index,
-        current_gain: get_gain(gain_index).await?,
-    });
-}
+            pid: pid::Pid::new(TARGET, 0.1).p(3.0, 1.0).clone(),
+            index: *i,
+            gain_index: gain_index,
+            current_gain: get_gain(gain_index).await?,
+        });
+    }
 
     loop {
         let cur_values = get_measurements().await?;
 
         for c in controls.iter_mut() {
-        let cur_value = *cur_values.get(c.index).ok_or_else(|| anyhow::anyhow!("No cur value"))?;
-        let output = c.pid.next_control_output(cur_value);
-        c.current_gain += output.output;
-        set_gain(c.gain_index,c.current_gain).await?;
+            let cur_value = *cur_values
+                .get(c.index)
+                .ok_or_else(|| anyhow::anyhow!("No cur value"))?;
+            let output = c.pid.next_control_output(cur_value);
+            c.current_gain += output.output;
+            set_gain(c.gain_index, c.current_gain).await?;
 
-        println!("Cur value: {:?}, output: {:?}", cur_value, output);
+            println!("Cur value: {:?}, output: {:?}", cur_value, output);
         }
     }
 
