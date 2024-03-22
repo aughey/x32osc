@@ -222,9 +222,9 @@ async fn main() -> Result<()> {
     for i in INDICES {
         let gain_index = if *i < 15 { *i } else { *i + 16 };
         controls.push(Control {
-            pid: pid::Pid::new(TARGET, 0.1).p(3.0, 1.0).clone(),
+            pid: pid::Pid::new(TARGET, 0.1).p(3.0, 1.0).to_owned(),
             index: *i,
-            gain_index: gain_index,
+            gain_index,
             current_gain: get_gain(gain_index).await?,
         });
     }
