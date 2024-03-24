@@ -31,7 +31,7 @@ async fn main() -> Result<()> {
     println!("x32 info: {:?}", x32.info().await?);
 
     for _ in 0..10 {
-        println!("Meters: {:?}", x32.meters_averaged(10).await?);
+        println!("Meters: {:?}", x32.meters_averaged(5).await?);
     }
 
     return Ok(());
