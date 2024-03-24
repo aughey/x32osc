@@ -10,22 +10,33 @@ pub struct Info {
     pub version: String,
 }
 
+/// trait Sender will send a Vec<u8> to a remote location.
 pub trait Sender {
+    /// Send a Vec<u8> to a remote location.
     fn send(&self, data: Vec<u8>) -> impl Future<Output = anyhow::Result<()>>;
 }
+
+/// trait Receiver will receive a Vec<u8> from a remote location.
 pub trait Receiver {
+    /// Receive a Vec<u8> from a remote location.
     fn receive(&self) -> impl Future<Output = anyhow::Result<Vec<u8>>>;
 }
 
+/// The X32 struct provides methods to interact with an X32 mixer.
 pub struct X32<S> {
+    /// The sender that will send data to the X32.
     sender: S,
+    /// An optional receive channel where there is a separate task that is receiving messages.
     receive_channel: Option<Arc<tokio::sync::broadcast::Sender<OscMessage>>>,
 }
 
+// methods that are more lower-level core methods of the X32 struct.  This includes send and
+// receive methods without any specific command in mind.
 impl<S> X32<S>
 where
     S: Sender,
 {
+    /// Creates a new X32 struct with the given sender.
     pub fn new(sender: S) -> Self {
         X32 {
             sender,
@@ -33,6 +44,8 @@ where
         }
     }
 
+    /// Internal convenience function to recursively messages contained
+    /// in a OscPacket to the given broadcast channel.
     fn recurse_send(
         tx: &tokio::sync::broadcast::Sender<OscMessage>,
         packet: OscPacket,
@@ -51,16 +64,27 @@ where
         Ok(())
     }
 
-    // This method must be called in a task to receive messages.
-    // The future returned shall be waited for in a separate task to receive messages.
+    /// poll_receive will provide a future that will use the provided receiver to receive messages.
+    /// The future returned shall be waited for in a separate task to receive messages.
+    /// This is necessary because messages from the X32 are sent asynchronously and we need to
+    /// be able to receive them at any time.  There is not always a 1 to 1 correspondence between
+    /// messages sent and messages received.
+    ///
+    /// This is a cleaver rust trick to modify the internals of self through the mutable reference,
+    /// but since this function returns a future that no longer depends on self, we can start
+    /// this receive machinery without holding on to a mutable reference to self or doing any
+    /// Mutex or RefCell shenanigans.
     pub fn poll_receive(
         &mut self,
         recv: impl Receiver,
     ) -> impl Future<Output = anyhow::Result<()>> {
+        // Create the broadcast channel and update self.
         let (tx, _rx) = tokio::sync::broadcast::channel(16);
         let tx = Arc::new(tx);
         self.receive_channel = Some(tx.clone());
 
+        // We return an async future that only depends on the tx broadcast channel and
+        // the receiver that we own.  No dependnencies on self.
         async move {
             loop {
                 let mut bytes = recv.receive().await?;
@@ -75,7 +99,13 @@ where
         }
     }
 
-    // Called before you send a message so that you can start receiving messages before it's actually sent.
+    /// Internal method to attach to the broadcast receive channel prior to sending a message.
+    /// This is called before you send a message so that there isn't a race condition between the
+    /// send and the receive where you might miss a message.
+    ///
+    /// It's important that the signature of this function is not async because
+    /// we need to do actual work of subscribing to the broadcast channel first before we
+    /// start to wait on it.  If we used async, the future does not run at all until it is awaited.
     fn start_recv_msg<'a>(
         &self,
         expect: &'a str,
@@ -103,6 +133,7 @@ where
         })
     }
 
+    /// Send and receive a single command to the X32.
     async fn send_recv_command(&self, command: &str) -> anyhow::Result<OscMessage> {
         let msg = rosc::OscMessage {
             addr: command.to_string(),
@@ -111,12 +142,14 @@ where
         self.send_recv_msg(msg, command).await
     }
 
+    /// Send and receive a single message to the X32.
     async fn send_recv_msg(&self, msg: OscMessage, expect: &str) -> anyhow::Result<OscMessage> {
         let rx = self.start_recv_msg(expect)?;
         self.send_msg(msg).await?;
         rx.await
     }
 
+    /// Send a message to the X32.
     async fn send_msg(&self, msg: OscMessage) -> anyhow::Result<()> {
         let packet = OscPacket::Message(msg);
         let bytes = rosc::encoder::encode(&packet)?;
