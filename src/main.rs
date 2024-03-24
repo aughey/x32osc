@@ -15,17 +15,19 @@ async fn main() -> Result<()> {
     let x32 = x32::X32::new((socket.clone(), remote_addr));
 
     // Spawn a task to receive messages
-    let x32 = {
+    let (join, x32) = {
         let socket = socket.clone();
         let mut x32 = x32;
         let poller = x32.poll_receive(socket);
-        tokio::spawn(async move {
-            match poller.await {
-                Err(e) => eprintln!("Poller error: {:?}", e),
-                _ => (),
-            }
-        });
-        x32
+        (
+            tokio::spawn(async move {
+                match poller.await {
+                    Err(e) => eprintln!("Poller error: {:?}", e),
+                    _ => (),
+                }
+            }),
+            x32,
+        )
     };
 
     println!("x32 info: {:?}", x32.info().await?);
@@ -36,38 +38,40 @@ async fn main() -> Result<()> {
 
     println!(
         "Gain value for amp 0: {gain}",
-        gain=x32.headamp_gain(HeadampIndex::new(0)).await?
+        gain = x32.headamp_gain(HeadampIndex::new(0)).await?
     );
 
     for ch in 0..32 {
         println!(
             "Channel {ch} has headamp source: {headamp:?}",
-            headamp = x32.channel_index_to_headamp_index(ChannelIndex::new(ch)).await?
+            headamp = x32
+                .channel_index_to_headamp_index(ChannelIndex::new(ch))
+                .await
         );
     }
 
+    join.abort();
+
     return Ok(());
-
-    
-
 
     // Converge on our own here
     const TARGET: f32 = 0.005;
     const CHANNELS: &[usize] = &[0, 16, 18, 24, 25, 26, 27, 28, 29];
-    let channels = CHANNELS.iter().map(|x| ChannelIndex::new(*x));
 
     struct Control {
         pid: pid::Pid<f32>,
-        index: ChannelIndex,
+        mixer_index: usize,
         gain_index: HeadampIndex,
         current_gain: f32,
     }
     let mut controls = Vec::new();
-    for i in channels {
-        let gain_index = x32.channel_index_to_headamp_index(i).await?;
+    for i in CHANNELS {
+        let mixer_index = *i;
+        let channel = ChannelIndex::new(mixer_index);
+        let gain_index = x32.channel_index_to_headamp_index(channel).await?;
         controls.push(Control {
             pid: pid::Pid::new(TARGET, 0.1).p(3.0, 1.0).to_owned(),
-            index: i,
+            mixer_index,
             gain_index,
             current_gain: x32.headamp_gain(gain_index).await?,
         });
@@ -78,7 +82,7 @@ async fn main() -> Result<()> {
 
         for c in controls.iter_mut() {
             let cur_value = *cur_values
-                .get(usize::from(c.index))
+                .get(c.mixer_index)
                 .ok_or_else(|| anyhow::anyhow!("No cur value"))?;
             let output = c.pid.next_control_output(cur_value);
             c.current_gain += output.output;
