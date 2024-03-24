@@ -1,6 +1,7 @@
 use anyhow::Result;
 use rosc::{OscMessage, OscPacket};
 use std::{future::Future, net::SocketAddr, sync::Arc};
+use x32osc::x32;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -9,28 +10,33 @@ async fn main() -> Result<()> {
     let remote_addr = "10.0.0.50:10023";
     let remote_addr: SocketAddr = remote_addr.parse()?;
 
-    // Create an /info osc message
-    let msg = OscMessage {
-        addr: "/info".to_string(),
-        args: vec![],
-    };
-
-    let packet = OscPacket::Message(msg);
-    let packet_bytes = rosc::encoder::encode(&packet)?;
-
-    println!("Info message: {:?}", packet_bytes);
-
-    // Send the packet to the remote address
-    socket.send_to(&packet_bytes, remote_addr).await?;
-
-    // Receive a packet from the remote address
-    let mut buf = vec![0u8; 65536];
-    let (len, addr) = socket.recv_from(&mut buf).await?;
-    let packet = rosc::decoder::decode_udp(&buf[..len])?;
-    println!("Received packet: {:?} from {:?}", packet, addr);
-
     let socket = Arc::new(socket);
 
+    let x32 = x32::X32::new((socket.clone(), remote_addr));
+
+    // Spawn a task to receive messages
+    let x32 = {
+        let socket = socket.clone();
+        let mut x32 = x32;
+        let poller = x32.poll_receive(socket);
+        tokio::spawn(async move {
+            match poller.await {
+                Err(e) => eprintln!("Poller error: {:?}", e),
+                _ => (),
+            }
+        });
+        x32
+    };
+
+    println!("x32 info: {:?}", x32.info().await?);
+
+    for _ in 0..10 {
+        println!("Meters: {:?}", x32.meters_averaged(10).await?);
+    }
+
+    return Ok(());
+
+    // Create our sender and receiver functions for x32
     let send_data = {
         let socket = socket.clone();
         move |bytes: Vec<u8>| {
@@ -57,6 +63,26 @@ async fn main() -> Result<()> {
             }
         }
     };
+
+    // Create an /info osc message
+    let msg = OscMessage {
+        addr: "/info".to_string(),
+        args: vec![],
+    };
+
+    let packet = OscPacket::Message(msg);
+    let packet_bytes = rosc::encoder::encode(&packet)?;
+
+    println!("Info message: {:?}", packet_bytes);
+
+    // Send the packet to the remote address
+    socket.send_to(&packet_bytes, remote_addr).await?;
+
+    // Receive a packet from the remote address
+    let mut buf = vec![0u8; 65536];
+    let (len, addr) = socket.recv_from(&mut buf).await?;
+    let packet = rosc::decoder::decode_udp(&buf[..len])?;
+    println!("Received packet: {:?} from {:?}", packet, addr);
 
     let send_recv = {
         let send_data = send_data.clone();
@@ -109,6 +135,8 @@ async fn main() -> Result<()> {
 
     let floats = get_floats_from_packet(&res)?;
     println!("Floats: {:?}", floats);
+
+    return Ok(());
 
     let recv_until_empty = {
         let socket = socket.clone();
