@@ -1,7 +1,7 @@
 use anyhow::Result;
 use rosc::{OscMessage, OscPacket};
 use std::{future::Future, net::SocketAddr, sync::Arc};
-use x32osc::x32;
+use x32osc::x32::{self, ChannelIndex, HeadampIndex};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -34,254 +34,55 @@ async fn main() -> Result<()> {
         println!("Meters: {:?}", x32.meters_averaged(5).await?);
     }
 
-    return Ok(());
-
-    // Create our sender and receiver functions for x32
-    let send_data = {
-        let socket = socket.clone();
-        move |bytes: Vec<u8>| {
-            let socket = socket.clone();
-            async move {
-                socket.send_to(&bytes, remote_addr).await?;
-                Ok::<_, anyhow::Error>(())
-            }
-        }
-    };
-
-    let recv_data = {
-        let socket = socket.clone();
-        move || {
-            let socket = socket.clone();
-            async move {
-                let mut buf = vec![0u8; 65536];
-                let (len, _) = socket.recv_from(&mut buf).await?;
-                // expand here
-                let mut v = buf[..len].to_vec();
-                v.extend_from_slice(&[0u8; 8]);
-
-                Ok::<_, anyhow::Error>(v)
-            }
-        }
-    };
-
-    // Create an /info osc message
-    let msg = OscMessage {
-        addr: "/info".to_string(),
-        args: vec![],
-    };
-
-    let packet = OscPacket::Message(msg);
-    let packet_bytes = rosc::encoder::encode(&packet)?;
-
-    println!("Info message: {:?}", packet_bytes);
-
-    // Send the packet to the remote address
-    socket.send_to(&packet_bytes, remote_addr).await?;
-
-    // Receive a packet from the remote address
-    let mut buf = vec![0u8; 65536];
-    let (len, addr) = socket.recv_from(&mut buf).await?;
-    let packet = rosc::decoder::decode_udp(&buf[..len])?;
-    println!("Received packet: {:?} from {:?}", packet, addr);
-
-    let send_recv = {
-        let send_data = send_data.clone();
-        let recv_data = recv_data.clone();
-        move |bytes: Vec<u8>| {
-            let send_data = send_data.clone();
-            let recv_data = recv_data.clone();
-            async move {
-                send_data(bytes).await?;
-                recv_data().await
-            }
-        }
-    };
-
-    // send_osc(
-    //     OscMessage {
-    //         addr: "/headamp/000/gain".to_string(),
-    //         args: vec![rosc::OscType::Float(0.5)],
-    //     },
-    //     send_data.clone(),
-    // )
-    // .await?;
-
     println!(
-        "Trim value: {:?}",
-        send_recv_command("/headamp/000/gain", &send_recv).await?
+        "Gain value for amp 0: {gain}",
+        gain=x32.headamp_gain(HeadampIndex::new(0)).await?
     );
 
     for ch in 0..32 {
         println!(
-            "Channel {ch} has headamp source: {:?}",
-            send_recv_command(&format!("/-ha/{ch:0>2}/index", ch = ch), &send_recv).await?
+            "Channel {ch} has headamp source: {headamp:?}",
+            headamp = x32.channel_index_to_headamp_index(ChannelIndex::new(ch)).await?
         );
     }
 
-    send_recv_command("/info", &send_recv).await?;
-
-    let res = send_recv_osc(
-        OscMessage {
-            addr: "/meters".to_string(),
-            args: vec![
-                rosc::OscType::String("/meters/1".to_string()),
-                rosc::OscType::Int(0),
-            ],
-        },
-        &send_recv,
-    )
-    .await?;
-    println!("Received packet: {:?}", res);
-
-    let floats = get_floats_from_packet(&res)?;
-    println!("Floats: {:?}", floats);
-
     return Ok(());
 
-    let recv_until_empty = {
-        let socket = socket.clone();
-        move || {
-            let socket = socket.clone();
-            async move {
-                let mut buf = vec![0u8; 65536];
-                let (len, _) = socket.recv_from(&mut buf).await?;
-                let buf = buf[..len].to_vec();
+    
 
-                // keep receiving until we cannot receive without blocking.
-                let mut second_buf = None;
-                loop {
-                    let mut buf = vec![0u8; 65536];
-                    match socket.try_recv(buf.as_mut()) {
-                        Ok(len) => {
-                            let v = buf[..len].to_vec();
-                            second_buf = Some(v);
-                        }
-                        Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
-                        Err(e) => return Err(e),
-                    }
-                }
-                let mut buf = if let Some(second_buf) = second_buf {
-                    second_buf
-                } else {
-                    buf
-                };
-                // pad
-                buf.extend_from_slice(&[0u8; 8]);
-                Ok(buf)
-            }
-        }
-    };
-
-    let get_measurements = {
-        let send_data = send_data.clone();
-        move || {
-            let send_data = send_data.clone();
-            let recv_until_empty = recv_until_empty.clone();
-            async move {
-                // send the /meters/1 message
-                send_osc(
-                    OscMessage {
-                        addr: "/meters".to_string(),
-                        args: vec![
-                            rosc::OscType::String("/meters/1".to_string()),
-                            rosc::OscType::Int(0),
-                        ],
-                    },
-                    &send_data,
-                )
-                .await?;
-
-                // Read 3 times and average
-                let mut sum = vec![0.0; 32];
-                const N: usize = 3;
-                for _ in 0..N {
-                    let buf = recv_until_empty().await?;
-                    let packet = rosc::decoder::decode_udp(&buf)?;
-                    let floats = get_floats_from_packet(&packet.1)?;
-                    for (sum, value) in sum.iter_mut().zip(floats.iter()) {
-                        *sum += *value;
-                    }
-                }
-                sum.iter_mut().for_each(|f| *f /= N as f32);
-                Ok::<_, anyhow::Error>(sum)
-            }
-        }
-    };
-
-    let get_gain = {
-        let send_recv = send_recv.clone();
-        move |index: usize| {
-            let send_recv = send_recv.clone();
-            async move {
-                let gain =
-                    send_recv_command(&format!("/headamp/{index:0>3}/gain"), &send_recv).await?;
-                let gain = match gain {
-                    OscPacket::Message(m) => m,
-                    _ => anyhow::bail!("Expected message, got {gain:?}"),
-                };
-                let gain = match gain.args.first() {
-                    Some(rosc::OscType::Float(f)) => f,
-                    _ => anyhow::bail!("Expected float in first arg of gain message"),
-                };
-                Ok::<_, anyhow::Error>(*gain)
-            }
-        }
-    };
-
-    let set_gain = |index: usize, value: f32| {
-        let send_data = send_data.clone();
-        println!("Setting gain: {:?}, {:?}", index, value);
-        async move {
-            send_osc(
-                OscMessage {
-                    addr: format!("/headamp/{index:0>3}/gain"),
-                    args: vec![rosc::OscType::Float(value)],
-                },
-                &send_data,
-            )
-            .await
-        }
-    };
 
     // Converge on our own here
     const TARGET: f32 = 0.005;
     const CHANNELS: &[usize] = &[0, 16, 18, 24, 25, 26, 27, 28, 29];
+    let channels = CHANNELS.iter().map(|x| ChannelIndex::new(*x));
 
     struct Control {
         pid: pid::Pid<f32>,
-        index: usize,
-        gain_index: usize,
+        index: ChannelIndex,
+        gain_index: HeadampIndex,
         current_gain: f32,
     }
     let mut controls = Vec::new();
-    for i in CHANNELS {
-        let gain_index = {
-            // Ask x32 what headamp is assigned to the channel
-            let packet =
-                send_recv_command(&format!("/-ha/{ch:0>2}/index", ch = i), &send_recv).await?;
-            // Get the first argument of the message
-            let value = first_arg(&packet)?;
-            // interpret it as an int and convert it into whatever we need
-            as_int(value)?.try_into()?
-        };
+    for i in channels {
+        let gain_index = x32.channel_index_to_headamp_index(i).await?;
         controls.push(Control {
             pid: pid::Pid::new(TARGET, 0.1).p(3.0, 1.0).to_owned(),
-            index: *i,
+            index: i,
             gain_index,
-            current_gain: get_gain(gain_index).await?,
+            current_gain: x32.headamp_gain(gain_index).await?,
         });
     }
 
     loop {
-        let cur_values = get_measurements().await?;
+        let cur_values = x32.meters_averaged(5).await?;
 
         for c in controls.iter_mut() {
             let cur_value = *cur_values
-                .get(c.index)
+                .get(usize::from(c.index))
                 .ok_or_else(|| anyhow::anyhow!("No cur value"))?;
             let output = c.pid.next_control_output(cur_value);
             c.current_gain += output.output;
-            set_gain(c.gain_index, c.current_gain).await?;
+            x32.set_headamp_gain(c.gain_index, c.current_gain).await?;
 
             println!("Cur value: {:?}, output: {:?}", cur_value, output);
         }

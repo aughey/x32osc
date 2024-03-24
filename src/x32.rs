@@ -10,6 +10,39 @@ pub struct Info {
     pub version: String,
 }
 
+#[derive(Debug,Clone,Copy)]
+pub struct ChannelIndex(usize);
+#[derive(Debug,Clone,Copy)]
+pub struct HeadampIndex(usize);
+impl HeadampIndex {
+    pub fn new(index: usize) -> Self {
+        Self(index)
+    }
+}
+
+impl ChannelIndex {
+    pub fn new(index: usize) -> Self {
+        Self(index)
+    }
+}
+impl From<ChannelIndex> for usize {
+    fn from(index: ChannelIndex) -> usize {
+        index.0
+    }
+}
+
+impl std::fmt::Display for HeadampIndex {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:0>3}", self.0)
+    }
+}
+
+impl std::fmt::Display for ChannelIndex {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:0>2}", self.0)
+    }
+}
+
 /// trait Sender will send a Vec<u8> to a remote location.
 pub trait Sender {
     /// Send a Vec<u8> to a remote location.
@@ -161,6 +194,7 @@ impl<S> X32<S>
 where
     S: Sender,
 {
+    /// Get the info from the X32.
     pub async fn info(&self) -> anyhow::Result<Info> {
         let msg = self.send_recv_command("/info").await?;
 
@@ -172,12 +206,50 @@ where
         })
     }
 
+    /// Get the headamp gain from the X32.  The index is 0 based.
+    pub async fn headamp_gain(&self, index: HeadampIndex) -> anyhow::Result<f32> {
+        let msg = self
+            .send_recv_command(&format!("/headamp/{index}/gain"))
+            .await?;
+        as_float(
+            msg.args
+                .get(0)
+                .ok_or_else(|| anyhow::anyhow!("Expected arg in position 0"))?,
+        )
+    }
+
+    pub async fn set_headamp_gain(&self, index: HeadampIndex, gain: f32) -> anyhow::Result<()> {
+        let msg = OscMessage {
+            addr: format!("/headamp/{index}/gain"),
+            args: vec![rosc::OscType::Float(gain)],
+        };
+        self.send_msg(msg).await
+    }
+
+    pub async fn channel_index_to_headamp_index(
+        &self,
+        channel_index: ChannelIndex,
+    ) -> anyhow::Result<HeadampIndex> {
+        let msg = self
+            .send_recv_command(&format!("/-ha/{channel_index}/index"))
+            .await?;
+        let index = as_i32(
+            msg.args
+                .get(0)
+                .ok_or_else(|| anyhow::anyhow!("Expected arg in position 0"))?,
+        )?;
+        Ok(HeadampIndex(index.try_into().map_err(|_| {
+            anyhow::anyhow!("Invalid headamp index: {index}")
+        })?))
+    }
+
+    /// Read multiple meters messages from the X32 and average them.
     pub async fn meters_averaged(&self, frames: usize) -> anyhow::Result<[f32; 32]> {
         let mut meters = [0.0; 32];
         for _ in 0..frames {
-            let frame = self.meters().await?;
-            assert_same_type(meters, frame);
-            for (m, f) in meters.iter_mut().zip(frame.iter()) {
+            let cur_values = self.meters().await?;
+            assert_same_type(meters, cur_values);
+            for (m, f) in meters.iter_mut().zip(cur_values.iter()) {
                 *m += f;
             }
         }
@@ -187,19 +259,20 @@ where
         Ok(meters)
     }
 
+    /// Construct a meters message for the given meter index.
+    fn meters_msg(index: u8) -> OscMessage {
+        OscMessage {
+            addr: "/meters".to_string(),
+            args: vec![
+                rosc::OscType::String(format!("/meters/{}", index)),
+                rosc::OscType::Int(0),
+            ],
+        }
+    }
+
+    /// Read the meters from the X32.  
     pub async fn meters(&self) -> anyhow::Result<[f32; 32]> {
-        let reply = self
-            .send_recv_msg(
-                OscMessage {
-                    addr: "/meters".to_string(),
-                    args: vec![
-                        rosc::OscType::String("/meters/1".to_string()),
-                        rosc::OscType::Int(0),
-                    ],
-                },
-                "/meters/1",
-            )
-            .await?;
+        let reply = self.send_recv_msg(Self::meters_msg(1), "/meters/1").await?;
 
         // The first argument is a blob of floats
         let values = match reply.args.first() {
@@ -233,61 +306,54 @@ fn collect_array<T>(mut values: impl Iterator<Item = Result<T>>, array: &mut [T]
     Ok(())
 }
 
-// Some convenience functions to make extracting data more convenient for error reporting
+/// Given an OscMessage and an index, return the argument at that index.
+/// Returns a Result instead of an Option with additional error information.
 fn arg(msg: &OscMessage, index: usize) -> Result<&rosc::OscType> {
     msg.args
         .get(index)
         .ok_or_else(|| anyhow::anyhow!("Expected arg in position {index}"))
 }
 
-fn as_string(arg: &rosc::OscType) -> Result<&str> {
+/// Given an OscType, return a reference to a string or an error.
+fn as_str_ref(arg: &rosc::OscType) -> Result<&str> {
     match arg {
         rosc::OscType::String(s) => Ok(s),
         _ => Err(anyhow::anyhow!("Expected string, got {:?}", arg)),
     }
 }
 
+/// Give an OscType, return a float or an error.
+fn as_float(arg: &rosc::OscType) -> Result<f32> {
+    match arg {
+        rosc::OscType::Float(f) => Ok(*f),
+        _ => Err(anyhow::anyhow!("Expected float, got {:?}", arg)),
+    }
+}
+
+/// Give an OscType, return an int or an error.
+fn as_i32(arg: &rosc::OscType) -> Result<i32> {
+    match arg {
+        rosc::OscType::Int(i) => Ok(*i),
+        _ => Err(anyhow::anyhow!("Expected float, got {:?}", arg)),
+    }
+}
+
+/// Given an OscMessage and an index, return the argument at that index as a string.
 fn arg_as_string(msg: &OscMessage, index: usize) -> Result<&str> {
     let value = arg(msg, index)?;
-    as_string(value)
+    as_str_ref(value)
 }
 
-fn get_floats_from_arg(arg: &rosc::OscType) -> Result<Vec<f32>> {
-    let meter_values = match arg {
-        rosc::OscType::Blob(blob) => blob,
-        _ => anyhow::bail!("Expected blob"),
-    };
-    let meter_values = meter_values.as_slice();
-
-    // use nom to get number of float as a 32 bit little endian value
-    let (rest, num_floats) =
-        nom::number::complete::le_u32::<_, nom::error::VerboseError<_>>(meter_values)
-            .map_err(|e| anyhow::anyhow!("Failed to get num floats: {e:?}"))?;
-
-    let num_floats: usize = num_floats.try_into()?;
-
-    // Parse the floating values
-    let (_rest, floats) = nom::multi::count(
-        nom::number::complete::le_f32::<_, nom::error::VerboseError<_>>,
-        num_floats,
-    )(rest)
-    .map_err(|e| anyhow::anyhow!("Failed to parse floats: {e:?}"))?;
-
-    Ok(floats)
-}
-
-// Take an argument that should be a blob and interpret it as a sequence of floats as defined in the x32 icd.
-// This is some great rust magic that will start the parsing and provide an iterator that will on-demand
-// provide the next float without allocating a vector to hold all the floats.
+/// Take a blob argument and interpret it as a sequence of floats as defined in the x32 icd.
+/// This is some great rust magic that will start the parsing and provide an iterator that will on-demand
+/// provide the next float without allocating a vector to hold all the floats.
+///
+/// The format is a u32 little endian value that is the number of floats followed by the floats as le f32.
 fn get_float_iter_from_blob<'a>(blob: &'a [u8]) -> Result<impl Iterator<Item = Result<f32>> + 'a> {
-    let meter_values = blob;
-
     // use nom to get number of float as a 32 bit little endian value
-    let (mut rest, num_floats) =
-        nom::number::complete::le_u32::<_, nom::error::VerboseError<_>>(meter_values)
+    let (mut rest, mut num_floats) =
+        nom::number::complete::le_u32::<_, nom::error::VerboseError<_>>(blob)
             .map_err(|e| anyhow::anyhow!("Failed to get num floats: {e:?}"))?;
-
-    let mut num_floats: usize = num_floats.try_into()?;
 
     Ok(std::iter::from_fn(move || {
         if num_floats == 0 {
@@ -297,7 +363,7 @@ fn get_float_iter_from_blob<'a>(blob: &'a [u8]) -> Result<impl Iterator<Item = R
         // Try to pull out the next float from the blob
         let (r, float) = match nom::number::complete::le_f32::<_, nom::error::VerboseError<_>>(rest)
         {
-            Ok((rest, float)) => (rest, float),
+            Ok((r, float)) => (r, float),
             Err(e) => return Some(Err(anyhow::anyhow!("Failed to parse float: {e:?}"))),
         };
 
