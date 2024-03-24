@@ -85,6 +85,13 @@ async fn main() -> Result<()> {
         send_recv_command("/headamp/000/gain", &send_recv).await?
     );
 
+    for ch in 0..32 {
+        println!(
+            "Channel {ch} has headamp source: {:?}",
+            send_recv_command(&format!("/-ha/{ch:0>2}/index", ch = ch), &send_recv).await?
+        );
+    }
+
     send_recv_command("/info", &send_recv).await?;
 
     let res = send_recv_osc(
@@ -210,7 +217,7 @@ async fn main() -> Result<()> {
 
     // Converge on our own here
     const TARGET: f32 = 0.005;
-    const INDICES: &[usize] = &[0, 16, 18, 24, 25, 26, 27, 28, 29];
+    const CHANNELS: &[usize] = &[0, 16, 18, 24, 25, 26, 27, 28, 29];
 
     struct Control {
         pid: pid::Pid<f32>,
@@ -219,8 +226,16 @@ async fn main() -> Result<()> {
         current_gain: f32,
     }
     let mut controls = Vec::new();
-    for i in INDICES {
-        let gain_index = if *i < 15 { *i } else { *i + 16 };
+    for i in CHANNELS {
+        let gain_index = {
+            // Ask x32 what headamp is assigned to the channel
+            let packet =
+                send_recv_command(&format!("/-ha/{ch:0>2}/index", ch = i), &send_recv).await?;
+            // Get the first argument of the message
+            let value = first_arg(&packet)?;
+            // interpret it as an int and convert it into whatever we need
+            as_int(value)?.try_into()?
+        };
         controls.push(Control {
             pid: pid::Pid::new(TARGET, 0.1).p(3.0, 1.0).to_owned(),
             index: *i,
@@ -272,6 +287,27 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
+fn first_arg(packet: &OscPacket) -> Result<&rosc::OscType> {
+    let msg = as_msg(packet)?;
+    msg.args
+        .first()
+        .ok_or_else(|| anyhow::anyhow!("Expected at least one arg in message"))
+}
+
+fn as_msg(packet: &OscPacket) -> Result<&OscMessage> {
+    match packet {
+        OscPacket::Message(m) => Ok(m),
+        _ => anyhow::bail!("Expected message, got {packet:?}"),
+    }
+}
+
+fn as_int(arg: &rosc::OscType) -> Result<i32> {
+    match arg {
+        rosc::OscType::Int(i) => Ok(*i),
+        _ => anyhow::bail!("Expected int, got {arg:?}"),
+    }
+}
+
 fn get_floats_from_packet(packet: &OscPacket) -> Result<Vec<f32>> {
     let meter_message = match packet {
         OscPacket::Message(m) => m,
@@ -317,12 +353,12 @@ async fn send_recv_osc<FutBuf>(
 where
     FutBuf: Future<Output = Result<Vec<u8>>>,
 {
-    println!("Sending message: {:?}", msg);
+    //    println!("Sending message: {:?}", msg);
 
     let packet = OscPacket::Message(msg);
     let bytes = rosc::encoder::encode(&packet)?;
 
-    println!("Sending packet: {bytes:?}");
+    //   println!("Sending packet: {bytes:?}");
 
     let response = send_recv(bytes).await?;
 
