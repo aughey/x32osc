@@ -314,6 +314,7 @@ fn as_str_ref(arg: &rosc::OscType) -> Result<&str> {
     }
 }
 
+/// Given an OscType, return a reference to a blob or an error.
 fn as_blob(arg: &rosc::OscType) -> Result<&Vec<u8>> {
     match arg {
         rosc::OscType::Blob(b) => Ok(b),
