@@ -17,7 +17,6 @@ async fn main() -> Result<()> {
 
     // Spawn a task to receive messages
     let (join,x32) = {
-        let socket = socket.clone();
         // Change our mutability to call poll_receive
         let mut x32 = x32;
         let poller = x32.poll_receive(socket);
