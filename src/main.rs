@@ -11,7 +11,7 @@ async fn main() -> Result<()> {
         let remote_addr = "10.0.0.50:10023";
         let remote_addr: SocketAddr = remote_addr.parse()?;
         let socket = Arc::new(socket);
-        x32::X32::new((socket.clone(), remote_addr))
+        (socket,x32::X32::new((socket.clone(), remote_addr)))
     };
 
     // Spawn a task to receive messages
