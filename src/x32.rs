@@ -317,7 +317,7 @@ fn as_str_ref(arg: &rosc::OscType) -> Result<&str> {
     }
 }
 
-fn as_blob(arg: &rosc::OscType) -> Result<&rosc::OscType::Blob> {
+fn as_blob(arg: &rosc::OscType) -> Result<&rosc::Blob> {
     match arg {
         rosc::OscType::Blob(b) => Ok(b),
         _ => Err(anyhow::anyhow!("Expected blob, got {:?}", arg)),
