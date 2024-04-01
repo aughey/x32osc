@@ -10,9 +10,9 @@ pub struct Info {
     pub version: String,
 }
 
-#[derive(Debug,Clone,Copy)]
+#[derive(Debug, Clone, Copy)]
 pub struct ChannelIndex(usize);
-#[derive(Debug,Clone,Copy)]
+#[derive(Debug, Clone, Copy)]
 pub struct HeadampIndex(usize);
 impl HeadampIndex {
     pub fn new(index: usize) -> Self {
@@ -213,8 +213,7 @@ where
         let msg = self
             .send_recv_command(&format!("/headamp/{index}/gain"))
             .await?;
-        as_float(
-            arg(&msg,0)?)
+        as_float(arg(&msg, 0)?)
     }
 
     pub async fn set_headamp_gain(&self, index: HeadampIndex, gain: f32) -> anyhow::Result<()> {
@@ -232,9 +231,7 @@ where
         let msg = self
             .send_recv_command(&format!("/-ha/{channel_index}/index"))
             .await?;
-        let index = as_i32(
-            arg(&msg,0)?
-        )?;
+        let index = as_i32(arg(&msg, 0)?)?;
         Ok(HeadampIndex(index.try_into().map_err(|_| {
             anyhow::anyhow!("Invalid headamp index: {index}")
         })?))
@@ -273,7 +270,7 @@ where
         let reply = self.send_recv_msg(Self::meters_msg(1), "/meters/1").await?;
 
         // The first argument is a blob of floats
-        let values = as_blob(arg(&reply,0)?)?;
+        let values = as_blob(arg(&reply, 0)?)?;
 
         // Really great rust magic here.  get_float_iter_from_blog will give me an
         // iterator that will on-demand return a Result<f32> for each float in the blob.
@@ -317,13 +314,12 @@ fn as_str_ref(arg: &rosc::OscType) -> Result<&str> {
     }
 }
 
-fn as_blob(arg: &rosc::OscType) -> Result<&rosc::Blob> {
+fn as_blob(arg: &rosc::OscType) -> Result<&Vec<u8>> {
     match arg {
         rosc::OscType::Blob(b) => Ok(b),
         _ => Err(anyhow::anyhow!("Expected blob, got {:?}", arg)),
     }
 }
-
 
 /// Give an OscType, return a float or an error.
 fn as_float(arg: &rosc::OscType) -> Result<f32> {
