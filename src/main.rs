@@ -16,19 +16,19 @@ async fn main() -> Result<()> {
     };
 
     // Spawn a task to receive messages
-    let join = {
+    let (join,x32) = {
         let socket = socket.clone();
         // Change our mutability to call poll_receive
         let mut x32 = x32;
         let poller = x32.poll_receive(socket);
         
-            tokio::spawn(async move {
+         let join = tokio::spawn(async move {
                 match poller.await {
                     Err(e) => eprintln!("Poller error: {:?}", e),
                     _ => (),
                 }
-            })
-        
+            });
+        (join,x32)
     };
 
     // Print the info
