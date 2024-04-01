@@ -233,9 +233,7 @@ where
             .send_recv_command(&format!("/-ha/{channel_index}/index"))
             .await?;
         let index = as_i32(
-            msg.args
-                .get(0)
-                .ok_or_else(|| anyhow::anyhow!("Expected arg in position 0"))?,
+            arg(&msg,0)?
         )?;
         Ok(HeadampIndex(index.try_into().map_err(|_| {
             anyhow::anyhow!("Invalid headamp index: {index}")
