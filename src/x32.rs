@@ -273,7 +273,7 @@ where
         let reply = self.send_recv_msg(Self::meters_msg(1), "/meters/1").await?;
 
         // The first argument is a blob of floats
-        let values = as_blob(arg(&reply,0));
+        let values = as_blob(arg(&reply,0)?)?;
 
         // Really great rust magic here.  get_float_iter_from_blog will give me an
         // iterator that will on-demand return a Result<f32> for each float in the blob.
