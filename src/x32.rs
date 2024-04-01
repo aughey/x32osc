@@ -201,10 +201,10 @@ where
         let msg = self.send_recv_command("/info").await?;
 
         Ok(Info {
-            osc_version: arg_as_string(&msg, 0)?.to_string(),
-            osc_kind: arg_as_string(&msg, 1)?.to_string(),
-            name: arg_as_string(&msg, 2)?.to_string(),
-            version: arg_as_string(&msg, 3)?.to_string(),
+            osc_version: arg_as_str(&msg, 0)?.to_string(),
+            osc_kind: arg_as_str(&msg, 1)?.to_string(),
+            name: arg_as_str(&msg, 2)?.to_string(),
+            version: arg_as_str(&msg, 3)?.to_string(),
         })
     }
 
@@ -341,7 +341,7 @@ fn as_i32(arg: &rosc::OscType) -> Result<i32> {
 }
 
 /// Given an OscMessage and an index, return the argument at that index as a string.
-fn arg_as_string(msg: &OscMessage, index: usize) -> Result<&str> {
+fn arg_as_str(msg: &OscMessage, index: usize) -> Result<&str> {
     let value = arg(msg, index)?;
     as_str_ref(value)
 }
