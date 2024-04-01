@@ -245,6 +245,7 @@ where
         let mut meters = [0.0; 32];
         for _ in 0..frames {
             let cur_values = self.meters().await?;
+            // assert_same_type so that we're assured meters and cur_values can be identically zipped
             assert_same_type(meters, cur_values);
             for (m, f) in meters.iter_mut().zip(cur_values.iter()) {
                 *m += f;
