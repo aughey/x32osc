@@ -273,10 +273,7 @@ where
         let reply = self.send_recv_msg(Self::meters_msg(1), "/meters/1").await?;
 
         // The first argument is a blob of floats
-        let values = match reply.args.first() {
-            Some(rosc::OscType::Blob(blob)) => blob,
-            _ => anyhow::bail!("Expected blob in first argument of /meters reply"),
-        };
+        let values = as_blob(arg(&reply,0));
 
         // Really great rust magic here.  get_float_iter_from_blog will give me an
         // iterator that will on-demand return a Result<f32> for each float in the blob.
@@ -319,6 +316,14 @@ fn as_str_ref(arg: &rosc::OscType) -> Result<&str> {
         _ => Err(anyhow::anyhow!("Expected string, got {:?}", arg)),
     }
 }
+
+fn as_blob(arg: &rosc::OscType) -> Result<&str> {
+    match arg {
+        rosc::OscType::Blob(b) => Ok(b),
+        _ => Err(anyhow::anyhow!("Expected blob, got {:?}", arg)),
+    }
+}
+
 
 /// Give an OscType, return a float or an error.
 fn as_float(arg: &rosc::OscType) -> Result<f32> {
