@@ -6,41 +6,45 @@ use x32osc::x32::{self, ChannelIndex, HeadampIndex};
 #[tokio::main]
 async fn main() -> Result<()> {
     // async create a udp socket
-    let socket = tokio::net::UdpSocket::bind("0.0.0.0:0").await?;
-    let remote_addr = "10.0.0.50:10023";
-    let remote_addr: SocketAddr = remote_addr.parse()?;
-
-    let socket = Arc::new(socket);
-
-    let x32 = x32::X32::new((socket.clone(), remote_addr));
+    let (socket,x32) = {
+        let socket = tokio::net::UdpSocket::bind("0.0.0.0:0").await?;
+        let remote_addr = "10.0.0.50:10023";
+        let remote_addr: SocketAddr = remote_addr.parse()?;
+        let socket = Arc::new(socket);
+        x32::X32::new((socket.clone(), remote_addr))
+    };
 
     // Spawn a task to receive messages
-    let (join, x32) = {
+    let join = {
         let socket = socket.clone();
+        // Change our mutability to call poll_receive
         let mut x32 = x32;
         let poller = x32.poll_receive(socket);
-        (
+        
             tokio::spawn(async move {
                 match poller.await {
                     Err(e) => eprintln!("Poller error: {:?}", e),
                     _ => (),
                 }
-            }),
-            x32,
-        )
+            })
+        
     };
 
+    // Print the info
     println!("x32 info: {:?}", x32.info().await?);
 
+    // 10 times, print the current meter value
     for _ in 0..10 {
         println!("Meters: {:?}", x32.meters_averaged(5).await?);
     }
 
+    // Print the gain value for the zeroth headamp
     println!(
         "Gain value for amp 0: {gain}",
         gain = x32.headamp_gain(HeadampIndex::new(0)).await?
     );
 
+    // Query the mapping between channel index and headamp index for each channel
     for ch in 0..32 {
         println!(
             "Channel {ch} has headamp source: {headamp:?}",
