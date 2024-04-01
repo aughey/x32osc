@@ -214,10 +214,7 @@ where
             .send_recv_command(&format!("/headamp/{index}/gain"))
             .await?;
         as_float(
-            msg.args
-                .get(0)
-                .ok_or_else(|| anyhow::anyhow!("Expected arg in position 0"))?,
-        )
+            arg(msg,0)?)
     }
 
     pub async fn set_headamp_gain(&self, index: HeadampIndex, gain: f32) -> anyhow::Result<()> {
