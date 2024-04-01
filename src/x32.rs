@@ -167,6 +167,8 @@ where
     }
 
     /// Send and receive a single command to the X32.
+    /// A "command", is a single addr message with no arguments that expects a corresponding
+    /// reply to be the same as the command.
     async fn send_recv_command(&self, command: &str) -> anyhow::Result<OscMessage> {
         let msg = rosc::OscMessage {
             addr: command.to_string(),
